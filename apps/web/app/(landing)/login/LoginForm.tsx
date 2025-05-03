@@ -19,10 +19,12 @@ export function LoginForm() {
   const next = searchParams?.get("next");
   const error = searchParams?.get("error");
 
+  console.log("LoginForm - searchParams:", { next, error });
+
   const [loading, setLoading] = useState(false);
 
   return (
-    <div className="flex flex-col gap-2 justify-center px-4 sm:px-16">
+    <div className="flex flex-col justify-center gap-2 px-4 sm:px-16">
       <Dialog>
         <DialogTrigger asChild>
           <Button size="2xl">
@@ -58,15 +60,23 @@ export function LoginForm() {
               loading={loading}
               onClick={() => {
                 setLoading(true);
+                console.log("Initiating Google sign-in...");
                 signIn(
                   "google",
                   {
                     ...(next && next.length > 0
                       ? { callbackUrl: next }
                       : { callbackUrl: "/welcome" }),
+                    redirect: false,
                   },
                   error === "RequiresReconsent" ? { consent: true } : undefined,
-                );
+                )
+                  .then((result) => {
+                    console.log("SignIn result:", result);
+                  })
+                  .catch((err) => {
+                    console.error("SignIn error:", err);
+                  });
               }}
             >
               I agree

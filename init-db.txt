@@ -1,0 +1,108 @@
+🛠 init-db.sh — Safe Prisma Database Init Script
+
+This script ensures you don’t forget to initialize Prisma properly any time you set up Inbox Zero fresh (local or cloud).
+
+Here’s the full script:
+
+#!/bin/bash
+
+echo "🚀 Starting Prisma Database Initialization..."
+
+# Step 1: Install Prisma Client (if not already installed)
+echo "📦 Ensuring dependencies are installed..."
+pnpm install
+
+# Step 2: Generate Prisma Client Code
+echo "🔧 Generating Prisma client..."
+pnpm prisma generate
+
+# Step 3: Run Database Migration (Deploy)
+echo "🛠️ Running Prisma migrations to initialize database schema..."
+pnpm prisma migrate deploy
+
+echo "✅ Prisma database setup completed successfully."
+
+
+
+⸻
+
+📋 How to Use
+	1.	Save this script in your project root as:
+init-db.sh
+	2.	Make it executable:
+
+chmod +x init-db.sh
+
+	3.	Then anytime you clone a fresh copy of Inbox Zero (or reset your database), simply run:
+
+./init-db.sh
+
+✅ It will automatically:
+	•	Install packages if needed
+	•	Generate Prisma client
+	•	Deploy all migration SQL into your Postgres database
+	•	Tell you when setup is complete
+
+⸻
+
+🛡 Bonus: Safety Checklist After Running init-db.sh
+
+After running the script, quickly verify that migration succeeded:
+
+Check	How
+Prisma Migration Success	You’ll see Applied migration ... successfully. in the output.
+Database Tables Exist	Log into your Postgres DB (e.g., via TablePlus, DBeaver, or psql CLI) and check that these tables exist: User, Session, Account, VerificationToken, Email, EmailSummary, etc.
+App Launch Works	Run pnpm dev — no Prisma/database errors should occur.
+
+✅ If you see tables, and app starts, you are 100% good.
+
+⸻
+
+📢 Important Tip
+	•	You only need to run init-db.sh ONCE per database initialization.
+	•	If you destroy and recreate your Postgres Docker container (e.g., via reset), just run ./init-db.sh again afterward.
+
+⸻
+
+📦 Final Folder Layout Example
+
+After you add init-db.sh, your project will look like:
+
+inbox-zero/
+├── .env.local
+├── start-local.sh
+├── stop-local.sh
+├── init-db.sh   <-- (new!)
+├── docker-compose.yml
+├── prisma/
+│   ├── schema.prisma
+│   ├── migrations/
+├── src/
+...
+
+✅ Very clean and fully professional!
+
+⸻
+
+🚀 Summary
+
+Item	Status
+init-db.sh Script	✅ Provided
+How to Use	✅ Explained
+Safety Check	✅ Provided
+Manual Migration Step Risk	❌ Eliminated
+
+
+
+⸻
+
+📢 Final Clean Command to Bootstrap Inbox Zero Locally Now
+
+After Docker up:
+
+./start-local.sh     # (starts containers, pnpm dev, opens localhost)
+./init-db.sh         # (only first time or after DB reset)
+
+
+
+⸻

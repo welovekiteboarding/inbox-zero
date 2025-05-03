@@ -26,216 +26,245 @@ export const SCOPES = [
 
 export const getAuthOptions: (options?: {
   consent: boolean;
-}) => NextAuthConfig = (options) => ({
-  // debug: true,
-  providers: [
-    GoogleProvider({
-      clientId: env.GOOGLE_CLIENT_ID,
-      clientSecret: env.GOOGLE_CLIENT_SECRET,
-      authorization: {
-        url: "https://accounts.google.com/o/oauth2/v2/auth",
-        params: {
-          scope: SCOPES.join(" "),
-          access_type: "offline",
-          response_type: "code",
-          // when we don't have the refresh token
-          // refresh token is only provided on first sign up unless we pass prompt=consent
-          // https://github.com/nextauthjs/next-auth/issues/269#issuecomment-644274504
-          ...(options?.consent ? { prompt: "consent" } : {}),
+}) => NextAuthConfig = (options) => {
+  console.log("[DEBUG] Google OAuth credentials:", {
+    clientId: env.GOOGLE_CLIENT_ID,
+    clientSecret: env.GOOGLE_CLIENT_SECRET
+      ? "***" +
+        env.GOOGLE_CLIENT_SECRET.substring(env.GOOGLE_CLIENT_SECRET.length - 4)
+      : "MISSING!",
+    scopes: SCOPES,
+    consent: options?.consent,
+  });
+
+  return {
+    debug: true,
+    providers: [
+      GoogleProvider({
+        clientId: env.GOOGLE_CLIENT_ID,
+        clientSecret: env.GOOGLE_CLIENT_SECRET,
+        authorization: {
+          url: "https://accounts.google.com/o/oauth2/v2/auth",
+          params: {
+            scope: SCOPES.join(" "),
+            access_type: "offline",
+            response_type: "code",
+            // when we don't have the refresh token
+            // refresh token is only provided on first sign up unless we pass prompt=consent
+            // https://github.com/nextauthjs/next-auth/issues/269#issuecomment-644274504
+            ...(options?.consent ? { prompt: "consent" } : {}),
+          },
         },
+      }),
+    ],
+    logger: {
+      error: (error) => {
+        logger.error(error.message, { error });
       },
-    }),
-  ],
-  logger: {
-    error: (error) => {
-      logger.error(error.message, { error });
+      warn: (message) => {
+        logger.warn(message);
+      },
+      debug: (message, metadata) => {
+        logger.info(message, { metadata });
+      },
     },
-    warn: (message) => {
-      logger.warn(message);
+    adapter: {
+      ...PrismaAdapter(prisma),
+      linkAccount: async (data: AdapterAccount): Promise<void> => {
+        try {
+          // --- Step 1: Create the Account record ---
+          const createdAccount = await prisma.account.create({
+            data,
+            select: { id: true, user: { select: { email: true } } },
+          });
+
+          // --- Step 2: Create the corresponding EmailAccount record ---
+          await prisma.emailAccount.upsert({
+            where: { email: createdAccount.user.email },
+            update: {
+              userId: data.userId,
+              accountId: createdAccount.id,
+            },
+            create: {
+              email: createdAccount.user.email,
+              userId: data.userId,
+              accountId: createdAccount.id,
+            },
+          });
+        } catch (error) {
+          logger.error("Error linking account", {
+            userId: data.userId,
+            error,
+          });
+          captureException(error, { extra: { userId: data.userId } });
+          throw error;
+        }
+      },
     },
-    debug: (message, metadata) => {
-      logger.info(message, { metadata });
-    },
-  },
-  adapter: {
-    ...PrismaAdapter(prisma),
-    linkAccount: async (data: AdapterAccount): Promise<void> => {
-      try {
-        // --- Step 1: Create the Account record ---
-        const createdAccount = await prisma.account.create({
-          data,
-          select: { id: true, user: { select: { email: true } } },
+    session: { strategy: "jwt" },
+    // based on: https://authjs.dev/guides/basics/refresh-token-rotation
+    // and: https://github.com/nextauthjs/next-auth-refresh-token-example/blob/main/pages/api/auth/%5B...nextauth%5D.js
+    callbacks: {
+      jwt: async ({ token, user, account }): Promise<JWT> => {
+        // Signing in
+        // on first sign in `account` and `user` are defined, thereafter only `token` is defined
+        console.log("[DEBUG] JWT Callback - inputs:", {
+          hasToken: !!token,
+          hasUser: !!user,
+          hasAccount: !!account,
+          tokenEmail: token?.email,
         });
 
-        // --- Step 2: Create the corresponding EmailAccount record ---
-        await prisma.emailAccount.upsert({
-          where: { email: createdAccount.user.email },
-          update: {
-            userId: data.userId,
-            accountId: createdAccount.id,
-          },
-          create: {
-            email: createdAccount.user.email,
-            userId: data.userId,
-            accountId: createdAccount.id,
-          },
-        });
-      } catch (error) {
-        logger.error("Error linking account", {
-          userId: data.userId,
-          error,
-        });
-        captureException(error, { extra: { userId: data.userId } });
-        throw error;
-      }
-    },
-  },
-  session: { strategy: "jwt" },
-  // based on: https://authjs.dev/guides/basics/refresh-token-rotation
-  // and: https://github.com/nextauthjs/next-auth-refresh-token-example/blob/main/pages/api/auth/%5B...nextauth%5D.js
-  callbacks: {
-    jwt: async ({ token, user, account }): Promise<JWT> => {
-      // Signing in
-      // on first sign in `account` and `user` are defined, thereafter only `token` is defined
-      if (account && user) {
-        // Google sends us `refresh_token` only on first sign in so we need to save it to the database then
-        // On future log ins, we retrieve the `refresh_token` from the database
-        if (account.refresh_token) {
-          logger.info("Saving refresh token", { email: token.email });
-          await saveRefreshToken(
-            {
-              access_token: account.access_token,
-              refresh_token: account.refresh_token,
-              expires_at: calculateExpiresAt(
-                account.expires_in as number | undefined,
-              ),
-            },
-            {
-              providerAccountId: account.providerAccountId,
-              refresh_token: account.refresh_token,
-            },
-          );
-          token.refresh_token = account.refresh_token;
-        } else {
-          const dbAccount = await prisma.account.findUnique({
-            where: {
-              provider_providerAccountId: {
-                providerAccountId: account.providerAccountId,
-                provider: "google",
+        if (account && user) {
+          console.log("[DEBUG] JWT - First sign in flow");
+          // Google sends us `refresh_token` only on first sign in so we need to save it to the database then
+          // On future log ins, we retrieve the `refresh_token` from the database
+          if (account.refresh_token) {
+            console.log("[DEBUG] JWT - Got refresh token from account");
+            logger.info("Saving refresh token", { email: token.email });
+            await saveRefreshToken(
+              {
+                access_token: account.access_token,
+                refresh_token: account.refresh_token,
+                expires_at: calculateExpiresAt(
+                  account.expires_in as number | undefined,
+                ),
               },
-            },
-            select: { refresh_token: true },
-          });
-          token.refresh_token = dbAccount?.refresh_token ?? undefined;
+              {
+                providerAccountId: account.providerAccountId,
+                refresh_token: account.refresh_token,
+              },
+            );
+            token.refresh_token = account.refresh_token;
+          } else {
+            console.log(
+              "[DEBUG] JWT - No refresh token in account, checking DB",
+            );
+            const dbAccount = await prisma.account.findUnique({
+              where: {
+                provider_providerAccountId: {
+                  providerAccountId: account.providerAccountId,
+                  provider: "google",
+                },
+              },
+              select: { refresh_token: true },
+            });
+            console.log("[DEBUG] JWT - DB account lookup result:", {
+              hasRefreshToken: !!dbAccount?.refresh_token,
+            });
+            token.refresh_token = dbAccount?.refresh_token ?? undefined;
+          }
+
+          token.access_token = account.access_token;
+          token.expires_at = account.expires_at;
+          token.user = user;
+
+          return token;
         }
 
-        token.access_token = account.access_token;
-        token.expires_at = account.expires_at;
-        token.user = user;
-
-        return token;
-      }
-
-      // logger.info("JWT callback - current token state", {
-      //   email: token.email,
-      //   currentExpiresAt: token.expires_at
-      //     ? new Date((token.expires_at as number) * 1000).toISOString()
-      //     : "not set",
-      // });
-
-      if (
-        token.expires_at &&
-        Date.now() < (token.expires_at as number) * 1000
-      ) {
-        // // If the access token has not expired yet, return it
-        // logger.info("Token still valid", {
+        // logger.info("JWT callback - current token state", {
         //   email: token.email,
-        //   expiresIn:
-        //     ((token.expires_at as number) * 1000 - Date.now()) / 1000 / 60,
-        //   minutes: true,
+        //   currentExpiresAt: token.expires_at
+        //     ? new Date((token.expires_at as number) * 1000).toISOString()
+        //     : "not set",
         // });
-        return token;
-      }
 
-      // If the access token has expired, try to refresh it
-      logger.info("Token expired at", {
-        email: token.email,
-        expiresAt: token.expires_at
-          ? new Date((token.expires_at as number) * 1000).toISOString()
-          : "not set",
-      });
-      const refreshedToken = await refreshAccessToken(token);
-      logger.info("Refresh attempt completed", {
-        email: token.email,
-        newExpiration: refreshedToken.expires_at
-          ? new Date(refreshedToken.expires_at * 1000).toISOString()
-          : "undefined",
-      });
-      return refreshedToken;
-    },
-    session: async ({ session, token }) => {
-      session.user = {
-        ...session.user,
-        id: token.sub as string,
-      };
+        if (
+          token.expires_at &&
+          Date.now() < (token.expires_at as number) * 1000
+        ) {
+          // // If the access token has not expired yet, return it
+          // logger.info("Token still valid", {
+          //   email: token.email,
+          //   expiresIn:
+          //     ((token.expires_at as number) * 1000 - Date.now()) / 1000 / 60,
+          //   minutes: true,
+          // });
+          return token;
+        }
 
-      // based on: https://github.com/nextauthjs/next-auth/issues/1162#issuecomment-766331341
-      session.accessToken = token?.access_token as string | undefined;
-      session.error = token?.error as string | undefined;
-
-      if (session.error) {
-        logger.error("session.error", {
+        // If the access token has expired, try to refresh it
+        logger.info("Token expired at", {
           email: token.email,
-          error: session.error,
+          expiresAt: token.expires_at
+            ? new Date((token.expires_at as number) * 1000).toISOString()
+            : "not set",
         });
-      }
+        const refreshedToken = await refreshAccessToken(token);
+        logger.info("Refresh attempt completed", {
+          email: token.email,
+          newExpiration: refreshedToken.expires_at
+            ? new Date(refreshedToken.expires_at * 1000).toISOString()
+            : "undefined",
+        });
+        return refreshedToken;
+      },
+      session: async ({ session, token }) => {
+        session.user = {
+          ...session.user,
+          id: token.sub as string,
+        };
 
-      return session;
+        // based on: https://github.com/nextauthjs/next-auth/issues/1162#issuecomment-766331341
+        session.accessToken = token?.access_token as string | undefined;
+        session.error = token?.error as string | undefined;
+
+        if (session.error) {
+          logger.error("session.error", {
+            email: token.email,
+            error: session.error,
+          });
+        }
+
+        return session;
+      },
     },
-  },
-  events: {
-    signIn: async ({ isNewUser, user }) => {
-      if (isNewUser && user.email) {
-        const [loopsResult, resendResult] = await Promise.allSettled([
-          createLoopsContact(user.email, user.name?.split(" ")?.[0]),
-          createResendContact({ email: user.email }),
-        ]);
+    events: {
+      signIn: async ({ isNewUser, user }) => {
+        if (isNewUser && user.email) {
+          const [loopsResult, resendResult] = await Promise.allSettled([
+            createLoopsContact(user.email, user.name?.split(" ")?.[0]),
+            createResendContact({ email: user.email }),
+          ]);
 
-        if (loopsResult.status === "rejected") {
-          const alreadyExists =
-            loopsResult.reason instanceof Error &&
-            loopsResult.reason.message.includes("409");
+          if (loopsResult.status === "rejected") {
+            const alreadyExists =
+              loopsResult.reason instanceof Error &&
+              loopsResult.reason.message.includes("409");
 
-          if (!alreadyExists) {
-            logger.error("Error creating Loops contact", {
+            if (!alreadyExists) {
+              logger.error("Error creating Loops contact", {
+                email: user.email,
+                error: loopsResult.reason,
+              });
+              captureException(loopsResult.reason, undefined, user.email);
+            }
+          }
+
+          if (resendResult.status === "rejected") {
+            logger.error("Error creating Resend contact", {
               email: user.email,
-              error: loopsResult.reason,
+              error: resendResult.reason,
             });
-            captureException(loopsResult.reason, undefined, user.email);
+            captureException(resendResult.reason, undefined, user.email);
           }
         }
 
-        if (resendResult.status === "rejected") {
-          logger.error("Error creating Resend contact", {
+        if (isNewUser && user.email) {
+          logger.info("Handling pending premium invite", { email: user.email });
+          await handlePendingPremiumInvite({ email: user.email });
+          logger.info("Added user to premium from invite", {
             email: user.email,
-            error: resendResult.reason,
           });
-          captureException(resendResult.reason, undefined, user.email);
         }
-      }
-
-      if (isNewUser && user.email) {
-        logger.info("Handling pending premium invite", { email: user.email });
-        await handlePendingPremiumInvite({ email: user.email });
-        logger.info("Added user to premium from invite", { email: user.email });
-      }
+      },
     },
-  },
-  pages: {
-    signIn: "/login",
-    error: "/login/error",
-  },
-});
+    pages: {
+      signIn: "/login",
+      error: "/login/error",
+    },
+  };
+};
 
 export const authOptions = getAuthOptions();
 
@@ -273,6 +302,7 @@ const refreshAccessToken = async (token: JWT): Promise<JWT> => {
   logger.info("Refreshing access token", { email: token.email });
 
   try {
+    console.log("[DEBUG] Refreshing token - Making request to Google OAuth");
     const response = await fetch("https://oauth2.googleapis.com/token", {
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -289,6 +319,16 @@ const refreshAccessToken = async (token: JWT): Promise<JWT> => {
       access_token: string;
       refresh_token: string;
     } = await response.json();
+
+    console.log(
+      "[DEBUG] Token refresh response status:",
+      response.status,
+      response.statusText,
+    );
+    console.log(
+      "[DEBUG] Token refresh response has access_token:",
+      !!tokens.access_token,
+    );
 
     if (!response.ok) throw tokens;
 

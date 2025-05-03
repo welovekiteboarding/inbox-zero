@@ -1,4 +1,5 @@
 import { redis } from "@/utils/redis";
+import { directRedis } from "@/utils/redis-direct";
 
 function getKey(userId: string) {
   return `reply-tracker:analyzing:${userId}`;
@@ -7,7 +8,7 @@ function getKey(userId: string) {
 export async function startAnalyzingReplyTracker(userId: string) {
   const key = getKey(userId);
   // expire in 5 minutes
-  await redis.set(key, "true", { ex: 5 * 60 });
+  await redis.set(key, "true", 5 * 60);
 }
 
 export async function stopAnalyzingReplyTracker(userId: string) {

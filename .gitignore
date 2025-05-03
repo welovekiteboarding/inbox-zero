@@ -66,3 +66,30 @@ tasks/
 
 # prisma
 apps/web/generated
+
+# Added by Claude Task Master
+# Logs
+logs
+*.log
+dev-debug.log
+# Dependency directories
+node_modules/
+# Environment variables
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+# OS specific
+# Task files
+tasks.json
+# Additional sensitive files
+client_secret_*.json
+*_secret_*.json
+.cursor/
+tasks_backup/
+tasks_backup_before_parse/
+*.windsurfrules
